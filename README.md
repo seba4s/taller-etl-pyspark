@@ -11,6 +11,5 @@ ETL sobre el [Online Retail Dataset](https://archive.ics.uci.edu/ml/datasets/Onl
 │   └── country_region.csv      # tabla de referencia usada para el join()
 ├── outputs/                    # resultados de cada pregunta (CSV)
 ├── etl_pyspark.py              # script principal
-├── CONCLUSIONES.md             # respuestas a las 10 preguntas + hallazgos
 └── requirements.txt
 ```
