@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+metastore_db/
+spark-warehouse/
+derby.log
