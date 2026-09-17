@@ -11,7 +11,7 @@ Ejecución:
 """
 
 import os
-import shutil
+import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -22,17 +22,32 @@ REGION_PATH = os.path.join(BASE_DIR, "data", "country_region.csv")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 
 
-def save_csv(df, name, coalesce=True):
-    """Exporta un DataFrame a un único CSV legible dentro de OUTPUT_DIR."""
-    tmp_path = os.path.join(OUTPUT_DIR, f"_tmp_{name}")
-    (df.coalesce(1) if coalesce else df).write.mode("overwrite").option(
-        "header", "true"
-    ).csv(tmp_path)
+def save_csv(df, name):
+    """Exporta un DataFrame de Spark (agregado, pocas filas) a un CSV legible.
 
+    Usamos toPandas().to_csv() en vez de df.write.csv() porque nuestros
+    resultados son tablas pequeñas y esto evita depender de winutils.exe /
+    Hadoop nativo, que en Windows suele faltar y hace fallar el escritor
+    distribuido de Spark (ver la demostración de df.write.csv() más abajo,
+    sobre el dataset completo, para el uso "real" de esa API).
+    """
     final_path = os.path.join(OUTPUT_DIR, f"{name}.csv")
-    part_file = [f for f in os.listdir(tmp_path) if f.startswith("part-")][0]
-    shutil.move(os.path.join(tmp_path, part_file), final_path)
-    shutil.rmtree(tmp_path)
+    df.toPandas().to_csv(final_path, index=False)
+    print(f"  -> {name}.csv exportado")
+
+
+def save_scalar_csv(data: dict, name: str):
+    """Exporta un resultado escalar (uno o pocos números sueltos) a CSV.
+
+    A diferencia de save_csv(), esto NO pasa por Spark en absoluto (ni
+    siquiera spark.createDataFrame). Crear un DataFrame de Spark a partir de
+    una lista de Python local requiere que Spark lance un proceso worker de
+    Python, y en Windows eso puede fallar con "no se encontró Python" cuando
+    el comando `python` está mapeado al stub de Microsoft Store en vez del
+    intérprete real. Para un solo número no tiene sentido pasar por ahí.
+    """
+    final_path = os.path.join(OUTPUT_DIR, f"{name}.csv")
+    pd.DataFrame([data]).to_csv(final_path, index=False)
     print(f"  -> {name}.csv exportado")
 
 
@@ -141,20 +156,14 @@ def main():
     # 1. Número total de facturas
     total_facturas = df.select("InvoiceNo").distinct().count()
     print(f"   1. Total de facturas: {total_facturas:,}")
-    save_csv(
-        spark.createDataFrame([(total_facturas,)], ["TotalFacturas"]),
-        "01_total_facturas",
-    )
+    save_scalar_csv({"TotalFacturas": total_facturas}, "01_total_facturas")
 
     # 2. Número de clientes únicos
     total_clientes = df.filter(F.col("CustomerID").isNotNull()).select(
         "CustomerID"
     ).distinct().count()
     print(f"   2. Clientes únicos: {total_clientes:,}")
-    save_csv(
-        spark.createDataFrame([(total_clientes,)], ["ClientesUnicos"]),
-        "02_clientes_unicos",
-    )
+    save_scalar_csv({"ClientesUnicos": total_clientes}, "02_clientes_unicos")
 
     # 3. Ingreso total (Quantity * UnitPrice), neto de devoluciones
     ingreso_total = df.agg(F.round(F.sum("TotalPrice"), 2).alias("IngresoTotalNeto"))
@@ -235,13 +244,35 @@ def main():
     )
     pct_devoluciones = round(100.0 * facturas_con_devolucion / total_facturas, 2)
     print(f"   10. % facturas con devoluciones: {pct_devoluciones}%")
-    save_csv(
-        spark.createDataFrame(
-            [(facturas_con_devolucion, total_facturas, pct_devoluciones)],
-            ["FacturasConDevolucion", "TotalFacturas", "PorcentajeDevoluciones"],
-        ),
+    save_scalar_csv(
+        {
+            "FacturasConDevolucion": facturas_con_devolucion,
+            "TotalFacturas": total_facturas,
+            "PorcentajeDevoluciones": pct_devoluciones,
+        },
         "10_pct_facturas_devoluciones",
     )
+
+    # ------------------------------------------------------------------
+    # 10. EXPORTACIÓN CON write.csv() NATIVO DE SPARK
+    #    Demostración explícita de la API pedida por el taller, sobre el
+    #    dataset completo ya enriquecido. En Windows sin winutils.exe
+    #    configurado esto puede fallar (limitación conocida de Hadoop en
+    #    Windows) — se captura el error para no interrumpir el resto del
+    #    taller, que ya quedó exportado arriba con toPandas().
+    # ------------------------------------------------------------------
+    print("5) Exportando dataset completo enriquecido con df.write.csv() nativo...")
+    try:
+        df.write.mode("overwrite").option("header", "true").csv(
+            os.path.join(OUTPUT_DIR, "dataset_enriquecido_spark_write")
+        )
+        print("   -> dataset_enriquecido_spark_write/ exportado")
+    except Exception as e:
+        print(
+            "   (aviso) df.write.csv() nativo no se pudo usar en este entorno "
+            f"({type(e).__name__}). No afecta los CSV de resultados de arriba, "
+            "que ya se exportaron con toPandas()."
+        )
 
     print("\nProceso ETL completado. Resultados en:", OUTPUT_DIR)
     spark.stop()
